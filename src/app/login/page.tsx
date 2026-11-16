@@ -1,11 +1,10 @@
 import Icon from "@mdi/react";
-import { mdiBadgeAccountOutline, mdiCardAccountDetailsOutline, mdiDomain, mdiServerNetwork } from "@mdi/js";
+import { mdiBadgeAccountOutline, mdiCardAccountDetailsOutline, mdiDatabaseOutline, mdiDomain } from "@mdi/js";
 import type { Metadata } from "next";
-import { connection } from "next/server";
 import { Suspense, type ReactNode } from "react";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { dados } from "@/dados";
 import { formatCnpj } from "@/lib/format";
-import { statusDoVx, type StatusVx } from "@/server/vx";
 import pacote from "../../../package.json";
 import { FormLogin } from "./form-login";
 
@@ -23,43 +22,26 @@ function Linha({ icone, rotulo, children }: { icone: string; rotulo: string; chi
   );
 }
 
-function Situacao({ ativa }: { ativa: boolean | null }) {
-  const texto = ativa === null ? "Verificando…" : ativa ? "Ativa" : "Inativa";
-  const cor = ativa === null ? "bg-white/50" : ativa ? "bg-success" : "bg-error";
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-white/30 px-2 py-0.5 text-xs">
-      <span aria-hidden className={`size-2 rounded-full ${cor}`} />
-      {texto}
-    </span>
-  );
-}
-
-/** Situação da API do VX e dados do cliente (`GET /status`), como na tela de login do BI antigo. */
-async function InfoSistema() {
-  await connection();
-  const status: StatusVx | null = await statusDoVx().catch(() => null);
-  const ativa = !!status?.versao;
+/** Dados do cliente de demonstração (D47), no lugar do status da API do VX. */
+function InfoSistema() {
+  const empresa = dados.empresa();
   return (
     <>
-      <Linha icone={mdiServerNetwork} rotulo="API do VX">
-        <span className="flex flex-wrap items-center justify-end gap-2">
-          {status?.versao && <span className="opacity-85">{status.versao}</span>}
-          <Situacao ativa={ativa} />
+      <Linha icone={mdiDatabaseOutline} rotulo="Fonte de dados">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-white/30 px-2 py-0.5 text-xs">
+          <span aria-hidden className="size-2 rounded-full bg-success" />
+          Simulada (conceito)
         </span>
       </Linha>
-      {ativa && (
-        <>
-          <Linha icone={mdiDomain} rotulo="Nome fantasia">
-            {status.nomeFantasia || "—"}
-          </Linha>
-          <Linha icone={mdiCardAccountDetailsOutline} rotulo="CNPJ">
-            {formatCnpj(status.cnpjFilialBase) || "—"}
-          </Linha>
-          <Linha icone={mdiBadgeAccountOutline} rotulo="Código do cliente (SGSCli)">
-            {status.codigoCliente ?? "—"}
-          </Linha>
-        </>
-      )}
+      <Linha icone={mdiDomain} rotulo="Nome fantasia">
+        {empresa.nomeFantasia}
+      </Linha>
+      <Linha icone={mdiCardAccountDetailsOutline} rotulo="CNPJ">
+        {formatCnpj(empresa.cnpj)}
+      </Linha>
+      <Linha icone={mdiBadgeAccountOutline} rotulo="Código do cliente">
+        {empresa.codigoCliente}
+      </Linha>
     </>
   );
 }
@@ -77,15 +59,10 @@ export default function LoginPage() {
         </Suspense>
         <div className="hidden flex-col gap-4 bg-header p-6 text-header-foreground md:flex md:p-8">
           <h2 className="text-base font-semibold">Informações do sistema</h2>
-          <Suspense
-            fallback={
-              <Linha icone={mdiServerNetwork} rotulo="API do VX">
-                <Situacao ativa={null} />
-              </Linha>
-            }
-          >
-            <InfoSistema />
-          </Suspense>
+          <InfoSistema />
+          <p className="mt-auto text-xs opacity-85">
+            Os dados são simulados: nenhum banco ou sistema externo é consultado.
+          </p>
         </div>
       </section>
       <p className="text-xs text-muted-foreground">Versão {pacote.version}</p>

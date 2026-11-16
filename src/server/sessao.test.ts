@@ -1,7 +1,6 @@
 import { SignJWT } from "jose";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
-// `env` exige as variáveis ao importar; a sessão só usa JWT_SECRET e CLIENT_SLUG.
 vi.mock("next/headers", () => ({ cookies: vi.fn(), headers: vi.fn() }));
 const SEGREDO = "segredo-de-teste-com-mais-de-32-caracteres";
 
@@ -9,7 +8,6 @@ let lerSessao: typeof import("./sessao").lerSessao;
 let nomeDoCookie: typeof import("./sessao").nomeDoCookie;
 
 beforeAll(async () => {
-  for (const nome of ["API_VIEW", "DB_HOST", "DB_USER", "DB_PASSWORD", "DB_DATABASE"]) vi.stubEnv(nome, "x");
   vi.stubEnv("JWT_SECRET", SEGREDO);
   vi.stubEnv("CLIENT_SLUG", "");
   ({ lerSessao, nomeDoCookie } = await import("./sessao"));

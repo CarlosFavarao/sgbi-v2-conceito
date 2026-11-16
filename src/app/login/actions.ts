@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { destinoSeguro } from "@/lib/destino";
-import { autenticar, LoginError } from "@/server/login";
+import { autenticar } from "@/server/login";
 import { criarSessao, encerrarSessao } from "@/server/sessao";
 
 export type EstadoLogin = { erro?: string; usuario?: string };
@@ -13,10 +13,9 @@ export async function entrar(_anterior: EstadoLogin, form: FormData): Promise<Es
   if (!usuario || !senha) return { erro: "Informe o usuário e a senha.", usuario };
 
   try {
-    const logado = await autenticar(usuario, senha);
+    const logado = await autenticar(usuario);
     await criarSessao(logado, form.get("manter") === "on");
   } catch (error) {
-    if (error instanceof LoginError) return { erro: error.message, usuario };
     console.error("[login]", error);
     return { erro: "Erro ao entrar. Tente novamente.", usuario };
   }

@@ -44,9 +44,14 @@ export const filiaisQuery = () =>
     staleTime: Infinity,
   });
 
-export type Sessao = { usuario: { login: string; nome: string; admin: boolean }; acesso: Acesso };
+export type Sessao = {
+  usuario: { login: string; nome: string; admin: boolean };
+  /** Cliente atendido (no modo conceito, o Mercado Teste). */
+  empresa: { nomeFantasia: string };
+  acesso: Acesso;
+};
 
-/** Usuário logado e o que ele pode ver (D45, D46). Vale até sair: a plataforma e as permissões vêm do login. */
+/** Usuário logado, cliente e o que ele pode ver (D45, D46). Vale até sair: a plataforma e as permissões vêm do login. */
 export const sessaoQuery = () =>
   queryOptions({
     queryKey: ["sessao"],

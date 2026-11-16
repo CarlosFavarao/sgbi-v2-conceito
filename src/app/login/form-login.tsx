@@ -12,7 +12,7 @@ const campo =
   "h-9 w-full rounded-lg border bg-card px-3 text-sm text-foreground shadow-xs outline-none transition-colors placeholder:text-muted-foreground hover:border-primary/60 focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-ring/30";
 const rotulo = "text-xs font-medium text-muted-foreground";
 
-/** Formulário de login (D45): valida no VX pela action `entrar` e volta para a tela de `?de=`. */
+/** Formulário de login (D45): a action `entrar` aceita qualquer usuário e senha (D47) e volta para a tela de `?de=`. */
 export function FormLogin() {
   const de = useSearchParams().get("de") ?? "";
   const [estado, enviar, enviando] = useActionState<EstadoLogin, FormData>(entrar, {});
@@ -23,7 +23,7 @@ export function FormLogin() {
     <form action={enviar} className="flex flex-col gap-4 p-6 md:p-8">
       <div className="mb-2 text-center">
         <h1 className="text-2xl font-bold text-primary">SGBI</h1>
-        <p className="text-sm text-muted-foreground">Acesse a plataforma com o usuário do VX</p>
+        <p className="text-sm text-muted-foreground">Modo conceito: entre com qualquer usuário e senha</p>
       </div>
       <input type="hidden" name="de" value={de} />
 

@@ -21,7 +21,8 @@ import { financeiroQueries } from "../queries";
 import type { FiltrosFinanceiro } from "../types";
 import { CategoriasCard } from "./categorias-card";
 import { CompromissosCard } from "./compromissos-card";
-import { EvolucaoMensalChart, IndicadoresCard, SaldoContasCard } from "./cards-inferiores";
+import { EvolucaoMensalChart, IndicadoresCard } from "./cards-inferiores";
+import { SaldoContasCard } from "./saldo-contas-card";
 import { EvolucaoCaixaChart } from "./evolucao-caixa-chart";
 import { FluxoPrevistoTable } from "./fluxo-previsto-table";
 import { kpisDoFinanceiro } from "./kpis-financeiro";
@@ -80,6 +81,7 @@ export function Financeiro() {
   const movimentos = useQuery(financeiroQueries.movimentos(filtros, janela, referencia));
   const movimentosAno = useQuery(financeiroQueries.movimentos(filtros, doze, referencia));
   const compromissos = useQuery(financeiroQueries.compromissos(filtros, referencia, dias));
+  const saldos = useQuery(financeiroQueries.saldos(filtros, referencia));
   const prazos = useQuery(
     financeiroQueries.prazos(
       filtros,
@@ -91,7 +93,7 @@ export function Financeiro() {
   const pendente = carregando(movimentos);
   const grade = useLayout("financeiro", LAYOUT_PADRAO, LIMITES);
 
-  const erro = [filiaisQuery, movimentos, movimentosAno, compromissos, prazos].find((q) => q.isError);
+  const erro = [filiaisQuery, movimentos, movimentosAno, compromissos, prazos, saldos].find((q) => q.isError);
   const avisos: Aviso[] = [];
   if (erro) {
     avisos.push({
@@ -102,15 +104,6 @@ export function Financeiro() {
       acao: { label: "Tentar novamente", onClick: () => void erro.refetch() },
     });
   }
-  avisos.push({
-    id: "fontes-financeiro",
-    nivel: "atencao",
-    titulo: "Fluxo de caixa parcial: faltam fontes de dados",
-    detalhes: [
-      "Saldos bancários e contas não estão no banco do SGBI: saldo em caixa, dias de cobertura e saldo por conta ficam indisponíveis.",
-      "Vendas em dinheiro e Pix só existem na API do VX: as entradas trazem cartões (pela liquidação) e contas a receber.",
-    ],
-  });
   useAvisos("financeiro", avisos);
 
   const meses =
@@ -205,12 +198,17 @@ export function Financeiro() {
                 atual: atual,
                 anterior: anterior,
                 menorSaldo: menor,
+                saldo: saldos.data?.total ?? null,
+                referencia,
+                saidasPrevistas: previsto.reduce((t, l) => t + l.saidas, 0),
+                diasPrevistos: dias,
                 series: {
                   entradas: diasDoMes.map((d) => ({ data: d.data, valor: d.entradas })),
                   saidas: diasDoMes.map((d) => ({ data: d.data, valor: d.saidas })),
                   resultado: diasDoMes.map((d) => ({ data: d.data, valor: d.entradas - d.saidas })),
                 },
                 carregando: pendente,
+                carregandoSaldo: carregando(saldos),
               })}
               maxColunas={6}
             />
@@ -239,7 +237,7 @@ export function Financeiro() {
               carregando={carregando(compromissos)}
             />
           ),
-          "saldo-contas": <SaldoContasCard />,
+          "saldo-contas": <SaldoContasCard saldos={saldos.data} carregando={carregando(saldos)} />,
           "evolucao-mensal": (
             <EvolucaoMensalChart
               pontos={porMes(

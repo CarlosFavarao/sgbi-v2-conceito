@@ -88,6 +88,7 @@ function NavLinks({ expanded, onNavigate }: { expanded: boolean; onNavigate?: ()
  * Celular: barra mínima no topo + menu deslizante.
  */
 export function AppShell({ children }: { children: ReactNode }) {
+  const empresa = useQuery(sessaoQuery()).data?.empresa.nomeFantasia;
   const [expanded, setExpanded] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -134,9 +135,10 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Icon path={expanded ? mdiMenuOpen : mdiMenu} size={0.85} />
           </button>
           <span
-            className={`whitespace-nowrap text-base font-semibold transition-opacity duration-150 ${expanded ? "opacity-100" : "opacity-0"}`}
+            className={`flex flex-col whitespace-nowrap leading-tight transition-opacity duration-150 ${expanded ? "opacity-100" : "opacity-0"}`}
           >
-            SGBI
+            <span className="text-base font-semibold">SGBI</span>
+            {empresa && <span className="text-[11px] opacity-80">{empresa}</span>}
           </span>
         </div>
         <nav aria-label="Módulos" className="flex-1">
@@ -163,7 +165,10 @@ export function AppShell({ children }: { children: ReactNode }) {
           >
             <Icon path={mdiMenu} size={1} />
           </button>
-          <span className="text-lg font-semibold">SGBI</span>
+          <span className="flex flex-col leading-tight">
+            <span className="text-lg font-semibold">SGBI</span>
+            {empresa && <span className="text-[11px] opacity-80">{empresa}</span>}
+          </span>
           <div className="ml-auto flex items-center gap-1">
             <AvisosBotao lado="bottom" />
             <UsuarioMenu lado="bottom" />

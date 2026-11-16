@@ -9,24 +9,6 @@ import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingOverlay } from "@/components/ui/loading-overlay";
 import { formatDecimal, formatMesAno, formatMoeda, formatMoedaCompacta } from "@/lib/format";
 import type { PontoMensal } from "../compute";
-import { NaoIntegrado } from "@/components/nao-integrado";
-
-/** Saldo por conta bancária: sem fonte no banco do SGBI (P42). */
-export function SaldoContasCard() {
-  return (
-    <Card className="min-w-0">
-      <CardHeader>
-        <CardTitle className="text-sm">Saldo de Caixa por Conta</CardTitle>
-      </CardHeader>
-      <div className="min-h-0 flex-1">
-        <NaoIntegrado
-          titulo="Saldos bancários não integrados"
-          detalhe="O banco do SGBI não tem contas bancárias nem saldos. Ver pendência P42 em decisoes-e-pendencias.md."
-        />
-      </div>
-    </Card>
-  );
-}
 
 function MensalPlot({
   pontos,
@@ -97,6 +79,7 @@ function MensalPlot({
 }
 
 const TITULO_MENSAL = "Evolução das Entradas e Saídas · 12 meses";
+const DESCRICAO_MENSAL = "Entradas, saídas e resultado de cada um dos 12 meses até o mês de referência.";
 
 const LEGENDA_MENSAL: ItemLegenda[] = [
   { nome: "Entradas", cor: "var(--success)" },
@@ -105,13 +88,23 @@ const LEGENDA_MENSAL: ItemLegenda[] = [
 ];
 
 /** Entradas, saídas e resultado por mês (12 meses até o mês de referência). */
-export function EvolucaoMensalChart({ pontos, carregando }: { pontos: PontoMensal[]; carregando: boolean }) {
+export function EvolucaoMensalChart({
+  pontos,
+  carregando,
+  titulo = TITULO_MENSAL,
+  descricao = DESCRICAO_MENSAL,
+}: {
+  pontos: PontoMensal[];
+  carregando: boolean;
+  titulo?: string;
+  descricao?: string;
+}) {
   const temDados = pontos.some((p) => p.entradas || p.saidas);
   return (
     <Card className="min-w-0">
       <CardHeader>
         <div className="min-w-0">
-          <CardTitle className="text-sm">{TITULO_MENSAL}</CardTitle>
+          <CardTitle className="text-sm">{titulo}</CardTitle>
           <LegendaGrafico itens={LEGENDA_MENSAL} />
         </div>
         
@@ -119,8 +112,8 @@ export function EvolucaoMensalChart({ pontos, carregando }: { pontos: PontoMensa
       <ExpandirGrafico
         className="relative min-h-0 flex-1 px-1 pb-2 pt-1"
         ocupado={carregando}
-        titulo={TITULO_MENSAL}
-          descricao="Entradas, saídas e resultado de cada um dos 12 meses até o mês de referência."
+        titulo={titulo}
+          descricao={descricao}
           legenda={<LegendaGrafico itens={LEGENDA_MENSAL} grande />}
           desabilitado={!temDados || carregando}
         detalhe={

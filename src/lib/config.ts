@@ -1,8 +1,14 @@
+import { firstDayOfMonth } from "./date";
 import type { Periodo } from "./filtros";
 
 /**
- * Período inicial das telas. Em homologação os dados completos mais recentes são
- * de julho/2026; troque por "mês atual" quando a carga estiver em dia (P7 em
- * docs/decisoes-e-pendencias.md).
+ * Período inicial das telas: o mês da última carga (do dia 1 até o último dia com
+ * venda). Os dados são D-1, então o período acompanha a data dos dados em vez de
+ * ficar fixo. Sem a data ainda (as filiais não chegaram), um período qualquer: as
+ * consultas esperam as filiais e não o usam.
  */
-export const PERIODO_PADRAO: Periodo = { inicio: "2026-07-01", fim: "2026-07-31" };
+export function periodoPadrao(dataMaxima: string | null | undefined): Periodo {
+  return dataMaxima
+    ? { inicio: firstDayOfMonth(dataMaxima), fim: dataMaxima }
+    : { inicio: "1970-01-01", fim: "1970-01-01" };
+}

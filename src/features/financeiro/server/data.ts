@@ -1,108 +1,69 @@
 import "server-only";
 
-import { and, between, eq, gt, inArray, sql, type AnyColumn, type SQL } from "drizzle-orm";
-import { cacheLife, cacheTag } from "next/cache";
-import { db } from "@/db";
-import { cartoesEmpresas, cartoesVendas, contasPagar, contasReceber, fornecedores } from "@/db/schema";
-import { addDays } from "@/lib/date";
-import type { Compromisso, Movimento, Periodo, PrazosResponse, SituacaoMovimento } from "../types";
+import { dados } from "@/dados";
+import { addDays, daysBetween } from "@/lib/date";
+import { agrupar, somar } from "@/server/origem";
+import type { Compromisso, Movimento, Periodo, PrazosResponse, SaldosResponse, SituacaoMovimento } from "../types";
 
-// Dados D-1 (carga noturna): cache de horas, invalidável pela tag.
-const CACHE_TAG = "financeiro";
-
-const sum = (column: AnyColumn | SQL) => sql<number>`coalesce(sum(${column}), 0)`.mapWith(Number);
-/** Datas vazias do VX chegam como 0000-00-00. */
-const preenchida = (column: AnyColumn) => gt(column, "1900-01-01");
-
-/** Valor de um título pago (o total pago; sem ele, o valor do título + taxa do boleto). */
-const valorPago = sql`coalesce(nullif(${contasPagar.valorTotalPagamento}, 0), ${contasPagar.valorPagar} + coalesce(${contasPagar.taxaBoleto}, 0))`;
-const valorAPagar = sql`${contasPagar.valorPagar} + coalesce(${contasPagar.taxaBoleto}, 0)`;
+const CATEGORIA_RECEBER = "Clientes (contas a receber)";
+const CATEGORIA_A_VISTA = "Vendas à vista (dinheiro e Pix)";
 
 /** Categoria de saída: "D" = despesa (P45); o resto, compra de mercadoria. */
-const categoriaPagar = sql<string>`case when ${contasPagar.classificacaoProduto} = 'D' then 'Despesas' else 'Fornecedores (mercadoria)' end`;
-const CATEGORIA_RECEBER = "Clientes (contas a receber)";
-
-// Sem texto acentuado no SQL: a tabela é latin1 e o literal viria em utf8mb4 (mistura de collations).
-const empresa = {
-  descricao: sql<string | null>`trim(${cartoesEmpresas.descricaoEmpresa})`,
-  codigo: cartoesVendas.codigoEmpresa,
-};
-const nomeEmpresa = (e: { descricao: string | null; codigo: number | null }) => e.descricao || `Cartão ${e.codigo}`;
+const categoriaPagar = (classificacao: "M" | "D") => (classificacao === "D" ? "Despesas" : "Fornecedores (mercadoria)");
 
 function situacaoEmAberto(vencimento: string, referencia: string): SituacaoMovimento {
   return vencimento <= referencia ? "vencido" : "previsto";
 }
 
+const dentro = (data: string | null, p: Periodo) => !!data && data >= p.inicio && data <= p.fim;
+
+/** Cartões de um dia agrupados por empresa (as parcelas vêm aos milhares). */
+function cartoesPorDiaEEmpresa(periodo: Periodo, lojas: number[]) {
+  return [...agrupar(dados.cartoesPorVencimento(periodo, lojas), (c) => `${c.dataVencimento}|${c.empresa}`)].map(
+    ([, linhas]) => ({
+      data: linhas[0].dataVencimento,
+      empresa: linhas[0].empresa,
+      valor: somar(linhas, (c) => c.valorLiquido),
+    }),
+  );
+}
+
 /**
  * Movimentos de caixa por dia e categoria no intervalo:
+ * - vendas à vista (dinheiro e Pix): realizadas no dia da venda;
  * - cartões: valor líquido no vencimento (liquidação); até a referência conta como realizado (P43);
  * - contas a receber e a pagar: realizadas na data do recebimento/pagamento (se até a referência),
  *   em aberto no vencimento.
  */
 export async function getMovimentos(periodo: Periodo, referencia: string, lojas: number[]): Promise<Movimento[]> {
-  "use cache";
-  cacheLife("hours");
-  cacheTag(CACHE_TAG);
-
-  const { inicio, fim } = periodo;
-  const [cartoes, receber, pagar] = await Promise.all([
-    db
-      .select({ data: cartoesVendas.dataVencimento, ...empresa, valor: sum(cartoesVendas.valorLiquido) })
-      .from(cartoesVendas)
-      .leftJoin(cartoesEmpresas, eq(cartoesEmpresas.codigoEmpresa, cartoesVendas.codigoEmpresa))
-      .where(and(inArray(cartoesVendas.codigoFilial, lojas), between(cartoesVendas.dataVencimento, inicio, fim)))
-      .groupBy(cartoesVendas.dataVencimento, cartoesVendas.codigoEmpresa),
-    // Tabelas pequenas: traz cada título e decide a situação pela referência.
-    db
-      .select({
-        vencimento: contasReceber.dataVencimento,
-        recebimento: contasReceber.dataRecebimento,
-        valorDocumento: contasReceber.valorDocumento,
-        valorRecebido: contasReceber.valorRecebido,
-      })
-      .from(contasReceber)
-      .where(
-        and(
-          inArray(contasReceber.codigoFilial, lojas),
-          sql`(${contasReceber.dataVencimento} between ${inicio} and ${fim} or ${contasReceber.dataRecebimento} between ${inicio} and ${fim})`,
-        ),
-      ),
-    db
-      .select({
-        vencimento: contasPagar.dataVencimento,
-        pagamento: contasPagar.dataPagamento,
-        categoria: categoriaPagar,
-        pago: sql<number>`${valorPago}`.mapWith(Number),
-        aPagar: sql<number>`${valorAPagar}`.mapWith(Number),
-      })
-      .from(contasPagar)
-      .where(
-        and(
-          inArray(contasPagar.codigoFilial, lojas),
-          sql`(${contasPagar.dataVencimento} between ${inicio} and ${fim} or ${contasPagar.dataPagamento} between ${inicio} and ${fim})`,
-        ),
-      ),
-  ]);
-
   const movimentos: Movimento[] = [];
-  const dentro = (data: string | null) => !!data && data > "1900-01-01" && data >= inicio && data <= fim;
 
-  for (const c of cartoes) {
-    if (!dentro(c.data)) continue;
+  // Dinheiro e Pix entram no dia da venda: só o que já aconteceu até a referência.
+  for (const v of dados.vendasAVista({ inicio: periodo.inicio, fim: periodo.fim < referencia ? periodo.fim : referencia }, lojas)) {
     movimentos.push({
-      data: c.data!,
+      data: v.data,
+      tipo: "entrada",
+      fonte: "avista",
+      categoria: CATEGORIA_A_VISTA,
+      situacao: "realizado",
+      valor: v.valor,
+    });
+  }
+
+  for (const c of cartoesPorDiaEEmpresa(periodo, lojas)) {
+    movimentos.push({
+      data: c.data,
       tipo: "entrada",
       fonte: "cartao",
-      categoria: nomeEmpresa(c),
-      situacao: c.data! <= referencia ? "realizado" : "previsto",
+      categoria: c.empresa,
+      situacao: c.data <= referencia ? "realizado" : "previsto",
       valor: c.valor,
     });
   }
 
-  for (const r of receber) {
+  for (const r of dados.titulosReceber(lojas, { vencimentoOuBaixa: periodo })) {
     // Recebido até a referência: realizado no dia do recebimento; senão, em aberto no vencimento.
-    const recebido = dentro(r.recebimento) && r.recebimento! <= referencia;
-    if (recebido) {
+    if (dentro(r.recebimento, periodo) && r.recebimento! <= referencia) {
       movimentos.push({
         data: r.recebimento!,
         tipo: "entrada",
@@ -111,37 +72,36 @@ export async function getMovimentos(periodo: Periodo, referencia: string, lojas:
         situacao: "realizado",
         valor: r.valorRecebido ?? 0,
       });
-    } else if (dentro(r.vencimento)) {
+    } else if (dentro(r.vencimento, periodo)) {
       movimentos.push({
-        data: r.vencimento!,
+        data: r.vencimento,
         tipo: "entrada",
         fonte: "receber",
         categoria: CATEGORIA_RECEBER,
-        situacao: situacaoEmAberto(r.vencimento!, referencia),
-        valor: r.valorDocumento ?? 0,
+        situacao: situacaoEmAberto(r.vencimento, referencia),
+        valor: r.valorDocumento,
       });
     }
   }
 
-  for (const p of pagar) {
-    const pago = dentro(p.pagamento) && p.pagamento! <= referencia;
-    if (pago) {
+  for (const p of dados.titulosPagar(lojas, { vencimentoOuBaixa: periodo })) {
+    if (dentro(p.pagamento, periodo) && p.pagamento! <= referencia) {
       movimentos.push({
         data: p.pagamento!,
         tipo: "saida",
         fonte: "pagar",
-        categoria: p.categoria,
+        categoria: categoriaPagar(p.classificacao),
         situacao: "realizado",
-        valor: p.pago,
+        valor: p.valorPago ?? p.valor,
       });
-    } else if (dentro(p.vencimento)) {
+    } else if (dentro(p.vencimento, periodo)) {
       movimentos.push({
-        data: p.vencimento!,
+        data: p.vencimento,
         tipo: "saida",
         fonte: "pagar",
-        categoria: p.categoria,
-        situacao: situacaoEmAberto(p.vencimento!, referencia),
-        valor: p.aPagar,
+        categoria: categoriaPagar(p.classificacao),
+        situacao: situacaoEmAberto(p.vencimento, referencia),
+        valor: p.valor,
       });
     }
   }
@@ -154,138 +114,79 @@ export async function getMovimentos(periodo: Periodo, referencia: string, lojas:
  * Os cartões de um dia são agrupados por empresa (são milhares de parcelas).
  */
 export async function getCompromissos(referencia: string, dias: number, lojas: number[]): Promise<Compromisso[]> {
-  "use cache";
-  cacheLife("hours");
-  cacheTag(CACHE_TAG);
-
   const ate = addDays(referencia, dias);
-  const desde = addDays(referencia, -60);
-  const [cartoes, receber, pagar] = await Promise.all([
-    db
-      .select({ data: cartoesVendas.dataVencimento, ...empresa, valor: sum(cartoesVendas.valorLiquido) })
-      .from(cartoesVendas)
-      .leftJoin(cartoesEmpresas, eq(cartoesEmpresas.codigoEmpresa, cartoesVendas.codigoEmpresa))
-      .where(
-        and(
-          inArray(cartoesVendas.codigoFilial, lojas),
-          between(cartoesVendas.dataVencimento, addDays(referencia, 1), ate),
-        ),
-      )
-      .groupBy(cartoesVendas.dataVencimento, cartoesVendas.codigoEmpresa),
-    db
-      .select({
-        data: contasReceber.dataVencimento,
-        descricao: sql<string>`coalesce(nullif(trim(${contasReceber.nomeCliente}), ''), 'Cliente sem nome')`,
-        valor: sql<number>`coalesce(${contasReceber.valorDocumento}, 0)`.mapWith(Number),
-        recebimento: contasReceber.dataRecebimento,
-      })
-      .from(contasReceber)
-      .where(and(inArray(contasReceber.codigoFilial, lojas), between(contasReceber.dataVencimento, desde, ate))),
-    db
-      .select({
-        data: contasPagar.dataVencimento,
-        descricao: sql<string>`coalesce(nullif(trim(${contasPagar.nome}), ''), nullif(trim(${fornecedores.nomeFantasia}), ''), nullif(trim(${fornecedores.razaoSocial}), ''), nullif(trim(${contasPagar.observacao}), ''), ${categoriaPagar})`,
-        valor: sql<number>`${valorAPagar}`.mapWith(Number),
-        pagamento: contasPagar.dataPagamento,
-      })
-      .from(contasPagar)
-      .leftJoin(fornecedores, eq(fornecedores.codigo, contasPagar.codigoFornecedor))
-      .where(and(inArray(contasPagar.codigoFilial, lojas), between(contasPagar.dataVencimento, desde, ate))),
-  ]);
+  const janela = { inicio: addDays(referencia, -60), fim: ate };
 
   // Em aberto na referência: sem baixa, ou baixado depois dela.
-  const emAberto = (baixa: string | null) => !baixa || baixa <= "1900-01-01" || baixa > referencia;
+  const emAberto = (baixa: string | null) => !baixa || baixa > referencia;
+
   const lista: Compromisso[] = [
-    ...cartoes.map((c) => ({
-      data: c.data!,
+    ...cartoesPorDiaEEmpresa({ inicio: addDays(referencia, 1), fim: ate }, lojas).map((c) => ({
+      data: c.data,
       tipo: "entrada" as const,
       fonte: "cartao" as const,
-      descricao: `Cartão · ${nomeEmpresa(c)}`,
+      descricao: `Cartão · ${c.empresa}`,
       valor: c.valor,
       situacao: "previsto" as const,
     })),
-    ...receber
-      .filter((r) => emAberto(r.recebimento))
+    ...dados
+      .titulosReceber(lojas, { vencimentoOuBaixa: janela })
+      .filter((r) => dentro(r.vencimento, janela) && emAberto(r.recebimento))
       .map((r) => ({
-        data: r.data!,
+        data: r.vencimento,
         tipo: "entrada" as const,
         fonte: "receber" as const,
-        descricao: r.descricao,
-        valor: r.valor,
-        situacao: situacaoEmAberto(r.data!, referencia) as "previsto" | "vencido",
+        descricao: r.cliente,
+        valor: r.valorDocumento,
+        situacao: situacaoEmAberto(r.vencimento, referencia) as "previsto" | "vencido",
       })),
-    ...pagar
-      .filter((p) => emAberto(p.pagamento))
+    ...dados
+      .titulosPagar(lojas, { vencimentoOuBaixa: janela })
+      .filter((p) => dentro(p.vencimento, janela) && emAberto(p.pagamento))
       .map((p) => ({
-        data: p.data!,
+        data: p.vencimento,
         tipo: "saida" as const,
         fonte: "pagar" as const,
-        descricao: p.descricao,
+        descricao: p.nome,
         valor: p.valor,
-        situacao: situacaoEmAberto(p.data!, referencia) as "previsto" | "vencido",
+        situacao: situacaoEmAberto(p.vencimento, referencia) as "previsto" | "vencido",
       })),
   ];
   return lista.filter((c) => c.valor).sort((a, b) => a.data.localeCompare(b.data) || b.valor - a.valor);
 }
 
+/** Média de `dias` ponderada pelo valor; null sem títulos. */
+function mediaPonderada<T>(linhas: T[], dias: (l: T) => number, valor: (l: T) => number): number | null {
+  const total = somar(linhas, valor);
+  return total ? somar(linhas, (l) => dias(l) * valor(l)) / total : null;
+}
+
 /** Prazos médios (dias, ponderados pelo valor) dos títulos emitidos/vendidos no período. */
 export async function getPrazos(periodo: Periodo, lojas: number[]): Promise<PrazosResponse> {
-  "use cache";
-  cacheLife("hours");
-  cacheTag(CACHE_TAG);
-
-  const media = (dias: SQL, valor: SQL | AnyColumn) =>
-    sql<number | null>`sum(${dias} * ${valor}) / nullif(sum(${valor}), 0)`.mapWith((v) =>
-      v == null ? null : Number(v),
-    );
-
-  const [[cartoes], [receber], [pagar]] = await Promise.all([
-    db
-      .select({
-        dias: media(
-          sql`datediff(${cartoesVendas.dataVencimento}, ${cartoesVendas.dataVenda})`,
-          cartoesVendas.valorLiquido,
-        ),
-      })
-      .from(cartoesVendas)
-      .where(
-        and(
-          inArray(cartoesVendas.codigoFilial, lojas),
-          between(cartoesVendas.dataVenda, periodo.inicio, periodo.fim),
-          preenchida(cartoesVendas.dataVencimento),
-        ),
-      ),
-    db
-      .select({
-        dias: media(
-          sql`datediff(${contasReceber.dataVencimento}, ${contasReceber.dataEmissao})`,
-          contasReceber.valorDocumento,
-        ),
-      })
-      .from(contasReceber)
-      .where(
-        and(
-          inArray(contasReceber.codigoFilial, lojas),
-          between(contasReceber.dataEmissao, periodo.inicio, periodo.fim),
-          preenchida(contasReceber.dataVencimento),
-        ),
-      ),
-    db
-      .select({
-        dias: media(sql`datediff(${contasPagar.dataVencimento}, ${contasPagar.dataEmissao})`, contasPagar.valorPagar),
-      })
-      .from(contasPagar)
-      .where(
-        and(
-          inArray(contasPagar.codigoFilial, lojas),
-          between(contasPagar.dataEmissao, periodo.inicio, periodo.fim),
-          preenchida(contasPagar.dataVencimento),
-        ),
-      ),
-  ]);
   return {
-    recebimentoCartoes: cartoes?.dias ?? null,
-    recebimentoClientes: receber?.dias ?? null,
-    pagamento: pagar?.dias ?? null,
+    recebimentoCartoes: mediaPonderada(
+      dados.cartoesPorVenda(periodo, lojas),
+      (c) => daysBetween(c.dataVenda, c.dataVencimento),
+      (c) => c.valorLiquido,
+    ),
+    recebimentoClientes: mediaPonderada(
+      dados.titulosReceber(lojas, { emissao: periodo }),
+      (t) => daysBetween(t.emissao, t.vencimento),
+      (t) => t.valorDocumento,
+    ),
+    pagamento: mediaPonderada(
+      dados.titulosPagar(lojas, { emissao: periodo }),
+      (t) => daysBetween(t.emissao, t.vencimento),
+      (t) => t.valor,
+    ),
   };
+}
+
+/** Saldo de cada conta no fim do dia `data`, somando as filiais. */
+export async function getSaldos(data: string, lojas: number[]): Promise<SaldosResponse> {
+  const contas = [...agrupar(dados.saldos(data, lojas), (s) => s.conta)].map(([conta, linhas]) => ({
+    conta,
+    saldo: somar(linhas, (s) => s.saldo),
+  }));
+  return { contas, total: somar(contas, (c) => c.saldo) };
 }

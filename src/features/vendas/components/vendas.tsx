@@ -13,13 +13,13 @@ import { BlocoKpis } from "@/components/layout/bloco-kpis";
 import { GradePersonalizavel } from "@/components/layout/grade-personalizavel";
 import { useLayout } from "@/components/layout/use-layout";
 import { Spinner } from "@/components/ui/spinner";
-import { PERIODO_PADRAO } from "@/lib/config";
+import { periodoPadrao } from "@/lib/config";
 import { periodoComparacao } from "@/lib/date";
 import { formatData, formatMoeda, formatMoedaCompacta, formatPercentual } from "@/lib/format";
 import { evolucaoComparativa } from "@/lib/serie";
 import { combinarSeries, indicadores } from "../compute";
 import { vendasQueries } from "../queries";
-import type { DiaVendas, Filtros } from "../types";
+import type { DiaVendas, Filtros, Periodo } from "../types";
 import { CurvaAbc } from "./curva-abc";
 import { DepartamentosBarras } from "./departamentos-barras";
 import { DesempenhoTable } from "./desempenho-table";
@@ -27,7 +27,8 @@ import { kpisDeVendas } from "./kpis-vendas";
 import { FONTES, LAYOUT_PADRAO, LIMITES, ROTULOS } from "../layout";
 import { ProdutosLista } from "./produtos-lista";
 
-type FiltrosEstado = Omit<Filtros, "filiais"> & { filiais: number[] | null };
+/** `null` = o padrão: mês da última carga e todas as filiais (resolvidos quando as filiais chegam). */
+type FiltrosEstado = Omit<Filtros, "filiais" | "periodo"> & { filiais: number[] | null; periodo: Periodo | null };
 
 const carregando = (q: { isPending: boolean; isPlaceholderData: boolean }) => q.isPending || q.isPlaceholderData;
 
@@ -44,9 +45,8 @@ const margemDe = (dias: DiaVendas[]) => {
 export function Vendas() {
   const filiaisQuery = useQuery(vendasQueries.filiais());
   const [estado, setEstado] = useState<FiltrosEstado>({
-    periodo: PERIODO_PADRAO,
+    periodo: null,
     comparacao: { tipo: "periodo-anterior" },
-    // null = todas as filiais com movimento (resolvido quando a lista chega).
     filiais: null,
     origem: "todos",
   });
@@ -54,6 +54,7 @@ export function Vendas() {
   const filtros: Filtros = useMemo(
     () => ({
       ...estado,
+      periodo: estado.periodo ?? periodoPadrao(filiaisQuery.data?.dataMaxima),
       filiais: estado.filiais ?? filiaisQuery.data?.filiais.map((f) => f.codigo) ?? [],
     }),
     [estado, filiaisQuery.data],

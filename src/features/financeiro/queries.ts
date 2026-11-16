@@ -1,6 +1,14 @@
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 import { filiaisQuery, getJson, STALE_TIME } from "@/lib/api";
-import type { CompromissosResponse, FiltrosFinanceiro, MovimentosResponse, Periodo, PrazosResponse } from "./types";
+import type {
+  CompromissosResponse,
+  DfcResponse,
+  FiltrosFinanceiro,
+  MovimentosResponse,
+  Periodo,
+  PrazosResponse,
+  SaldosResponse,
+} from "./types";
 
 const BASE = "/api/financeiro";
 const get = <T,>(path: string, params: Record<string, string>) => getJson<T>(`${BASE}${path}`, params);
@@ -39,6 +47,26 @@ export const financeiroQueries = {
       queryKey: ["financeiro", "prazos", params],
       queryFn: () => get<PrazosResponse>("/prazos", params),
       ...comum(f, !!periodo),
+    });
+  },
+
+  saldos: (f: FiltrosFinanceiro, referencia: string | null) => {
+    const params = { filiais: filiais(f), referencia: referencia ?? "" };
+    return queryOptions({
+      queryKey: ["financeiro", "saldos", params],
+      queryFn: () => get<SaldosResponse>("/saldos", params),
+      ...comum(f, !!referencia),
+    });
+  },
+
+  dfc: (f: { filiais: number[] }, mes: string, comparacao: string) => {
+    const params = { filiais: [...f.filiais].sort((a, b) => a - b).join(","), mes, comparacao };
+    return queryOptions({
+      queryKey: ["financeiro", "dfc", params],
+      queryFn: () => get<DfcResponse>("/dfc", params),
+      staleTime: STALE_TIME,
+      placeholderData: keepPreviousData,
+      enabled: f.filiais.length > 0 && !!mes && !!comparacao,
     });
   },
 };

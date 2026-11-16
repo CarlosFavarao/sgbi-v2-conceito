@@ -48,7 +48,7 @@ export const ROTULOS: Record<string, string> = {
 };
 
 /**
- * Fontes de dados por card (D46). A DFC ainda não tem fonte de caixa (P51):
- * quando tiver, declare aqui as fontes de cada card.
+ * Fontes de dados por card (D46). A DFC é montada com a simulação do caixa (D47) e
+ * não exige fontes da plataforma: quando vier de dados reais, declare aqui as fontes de cada card.
  */
 export const FONTES: Record<string, readonly Fonte[]> = {};

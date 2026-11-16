@@ -1,20 +1,9 @@
 import "server-only";
 
-import { and, between, eq, gt, inArray, sql, type AnyColumn, type SQL } from "drizzle-orm";
-import { cacheLife, cacheTag } from "next/cache";
-import { db } from "@/db";
-import {
-  analiseGerencial,
-  departamentos,
-  grupos,
-  previsaoDepartamento,
-  previsaoDia,
-  previsaoGrupo,
-  previsaoSubgrupo,
-  subgrupos,
-} from "@/db/schema";
+import { dados } from "@/dados";
 import { mesesDoPeriodo } from "@/lib/date";
 import type { Origem } from "@/lib/filtros";
+import { agrupar, custoPorOrigem, somar, vendaPorOrigem } from "@/server/origem";
 import { metaDiariaDoNivel, metaNivelNoPeriodo, type MetaMensal } from "../metas";
 import type {
   LinhaMetaNivel,
@@ -27,113 +16,65 @@ import type {
   TotalResponse,
 } from "../types";
 
-// Dados D-1 (carga noturna): cache de horas, invalidável pela tag.
-const CACHE_TAG = "metas";
-
-function vendaPorOrigem(origem: Origem) {
-  if (origem === "pdv") return analiseGerencial.totalPDV;
-  if (origem === "faturamento") return analiseGerencial.totalFaturamento;
-  return analiseGerencial.totalVenda;
-}
-
-function custoPorOrigem(origem: Origem) {
-  if (origem === "pdv") return analiseGerencial.totalCustoPDV;
-  if (origem === "faturamento") return analiseGerencial.totalCustoFaturamento;
-  return analiseGerencial.totalCusto;
-}
-
-const sum = (column: AnyColumn | SQL) => sql<number>`coalesce(sum(${column}), 0)`.mapWith(Number);
 const pad = (n: number) => String(n).padStart(2, "0");
-
-function filtroAnalise(periodo: Periodo, lojas: number[], departamento: number | null) {
-  return and(
-    inArray(analiseGerencial.filial, lojas),
-    between(analiseGerencial.data, periodo.inicio, periodo.fim),
-    departamento == null ? undefined : eq(analiseGerencial.departamento, departamento),
-  );
-}
-
 const anos = (p: Periodo) => [Number(p.inicio.slice(0, 4)), Number(p.fim.slice(0, 4))] as const;
 
-/** Meta diária da loja (soma das filiais), de `previsao_dia`. */
-async function curvaDaLoja(periodo: Periodo, lojas: number[]): Promise<MetaDia[]> {
-  const [anoInicio, anoFim] = anos(periodo);
-  const linhas = await db
-    .select({
-      ano: previsaoDia.ano,
-      mes: previsaoDia.mes,
-      dia: previsaoDia.codigoDia,
-      meta: sum(previsaoDia.previsaoVenda),
-      metaLucro: sum(previsaoDia.previsaoLucro),
-    })
-    .from(previsaoDia)
-    .where(and(inArray(previsaoDia.codigoFilial, lojas), between(previsaoDia.ano, anoInicio, anoFim)))
-    .groupBy(previsaoDia.ano, previsaoDia.mes, previsaoDia.codigoDia);
-  return linhas
-    .map((l) => ({ data: `${l.ano}-${pad(l.mes!)}-${pad(l.dia!)}`, meta: l.meta, metaLucro: l.metaLucro }))
-    .filter((d) => d.data >= periodo.inicio && d.data <= periodo.fim);
+/** Meta diária da loja (soma das filiais). */
+function curvaDaLoja(periodo: Periodo, lojas: number[]): MetaDia[] {
+  return [...agrupar(dados.metasDiarias(periodo, lojas), (m) => m.data)].map(([data, linhas]) => ({
+    data,
+    meta: somar(linhas, (m) => m.previsaoVenda),
+    metaLucro: somar(linhas, (m) => m.previsaoLucro),
+  }));
 }
 
 /** Metas mensais de um nível (soma das filiais) nos meses do período. */
-async function metasMensais(nivel: Nivel, periodo: Periodo, lojas: number[]): Promise<MetaMensal[]> {
-  const tabela = { departamento: previsaoDepartamento, grupo: previsaoGrupo, subgrupo: previsaoSubgrupo }[nivel];
+function metasMensais(nivel: Nivel, periodo: Periodo, lojas: number[]): MetaMensal[] {
   const [anoInicio, anoFim] = anos(periodo);
   const meses = new Set(mesesDoPeriodo(periodo));
-  const linhas = await db
-    .select({
-      codigo: tabela.codigo,
-      ano: tabela.ano,
-      mes: tabela.mes,
-      meta: sum(tabela.previsaoVenda),
-      metaLucro: sum(tabela.previsaoLucro),
-    })
-    .from(tabela)
-    .where(and(inArray(tabela.codigoFilial, lojas), between(tabela.ano, anoInicio, anoFim)))
-    .groupBy(tabela.codigo, tabela.ano, tabela.mes);
-  return linhas
-    .map((l) => ({ codigo: l.codigo!, mes: `${l.ano}-${pad(l.mes!)}`, meta: l.meta, metaLucro: l.metaLucro }))
-    .filter((l) => meses.has(l.mes));
+  const porCodigoEMes = agrupar(
+    dados.metasMensais(nivel, anoInicio, anoFim, lojas),
+    (m) => `${m.codigo}|${m.ano}-${pad(m.mes)}`,
+  );
+  return [...porCodigoEMes.values()]
+    .map((linhas) => ({
+      codigo: linhas[0].codigo,
+      mes: `${linhas[0].ano}-${pad(linhas[0].mes)}`,
+      meta: somar(linhas, (m) => m.previsaoVenda),
+      metaLucro: somar(linhas, (m) => m.previsaoLucro),
+    }))
+    .filter((m) => meses.has(m.mes));
 }
 
 /** Meses com meta cadastrada e lista de departamentos para o filtro. */
 export async function getOpcoes(lojas: number[]): Promise<OpcoesMetasResponse> {
-  "use cache";
-  cacheLife("hours");
-  cacheTag(CACHE_TAG);
-
-  const [meses, deps] = await Promise.all([
-    db
-      .selectDistinct({ ano: previsaoDia.ano, mes: previsaoDia.mes })
-      .from(previsaoDia)
-      .where(and(inArray(previsaoDia.codigoFilial, lojas), gt(previsaoDia.previsaoVenda, 0))),
-    db
-      .select({ codigo: departamentos.codigo, descricao: sql<string>`trim(${departamentos.descricao})` })
-      .from(departamentos)
-      .orderBy(departamentos.descricao),
-  ]);
+  const { dataMinima, dataMaxima } = dados.periodoCarregado();
+  const metas = dados.metasMensais("departamento", Number(dataMinima.slice(0, 4)), Number(dataMaxima.slice(0, 4)), lojas);
   return {
-    mesesComMeta: meses.map((m) => `${m.ano}-${pad(m.mes!)}`).sort(),
-    departamentos: deps,
+    mesesComMeta: [...new Set(metas.filter((m) => m.previsaoVenda > 0).map((m) => `${m.ano}-${pad(m.mes)}`))].sort(),
+    departamentos: [...dados.hierarquia().departamentos].sort((a, b) => a.descricao.localeCompare(b.descricao)),
   };
 }
 
 /**
- * Meta diária do período: da loja (`previsao_dia`) ou, com o filtro Departamento,
- * a meta mensal do departamento dividida igualmente pelos dias (P33).
+ * Meta diária do período: da loja ou, com o filtro Departamento, a meta mensal
+ * do departamento dividida igualmente pelos dias (P33).
  */
 export async function getMetasDiarias(
   periodo: Periodo,
   lojas: number[],
   departamento: number | null,
 ): Promise<MetaDia[]> {
-  "use cache";
-  cacheLife("hours");
-  cacheTag(CACHE_TAG);
-
   if (departamento == null) return curvaDaLoja(periodo, lojas);
   // Departamento: só há meta mensal, dividida igualmente pelos dias (P33).
-  const mensais = (await metasMensais("departamento", periodo, lojas)).filter((m) => m.codigo === departamento);
+  const mensais = metasMensais("departamento", periodo, lojas).filter((m) => m.codigo === departamento);
   return metaDiariaDoNivel(mensais).filter((d) => d.data >= periodo.inicio && d.data <= periodo.fim);
+}
+
+/** Linhas de venda do período, só do departamento filtrado (ou todas). */
+function vendaDoPeriodo(periodo: Periodo, lojas: number[], departamento: number | null) {
+  const linhas = dados.analise(periodo, lojas);
+  return departamento == null ? linhas : linhas.filter((l) => l.departamento === departamento);
 }
 
 /** Venda e custo por dia (só os dias com carga). */
@@ -143,19 +84,11 @@ export async function getRealizadoDiario(
   origem: Origem,
   departamento: number | null,
 ): Promise<RealizadoDia[]> {
-  "use cache";
-  cacheLife("hours");
-  cacheTag(CACHE_TAG);
-
-  return db
-    .select({
-      data: analiseGerencial.data,
-      venda: sum(vendaPorOrigem(origem)),
-      custo: sum(custoPorOrigem(origem)),
-    })
-    .from(analiseGerencial)
-    .where(filtroAnalise(periodo, lojas, departamento))
-    .groupBy(analiseGerencial.data);
+  return [...agrupar(vendaDoPeriodo(periodo, lojas, departamento), (l) => l.data)].map(([data, linhas]) => ({
+    data,
+    venda: somar(linhas, (l) => vendaPorOrigem(l, origem)),
+    custo: somar(linhas, (l) => custoPorOrigem(l, origem)),
+  }));
 }
 
 /** Venda e custo somados no período (aba Ano: o ano até a referência, sem trazer cada dia). */
@@ -165,24 +98,17 @@ export async function getTotal(
   origem: Origem,
   departamento: number | null,
 ): Promise<TotalResponse> {
-  "use cache";
-  cacheLife("hours");
-  cacheTag(CACHE_TAG);
-
-  const [total] = await db
-    .select({ venda: sum(vendaPorOrigem(origem)), custo: sum(custoPorOrigem(origem)) })
-    .from(analiseGerencial)
-    .where(filtroAnalise(periodo, lojas, departamento));
-  return total ?? { venda: 0, custo: 0 };
+  const linhas = vendaDoPeriodo(periodo, lojas, departamento);
+  return {
+    venda: somar(linhas, (l) => vendaPorOrigem(l, origem)),
+    custo: somar(linhas, (l) => custoPorOrigem(l, origem)),
+  };
 }
 
-const colunasNivel = {
-  departamento: { coluna: analiseGerencial.departamento, pai: null },
-  grupo: { coluna: analiseGerencial.grupo, pai: analiseGerencial.departamento },
-  subgrupo: { coluna: analiseGerencial.subgrupo, pai: analiseGerencial.grupo },
-} as const;
+/** Nível acima de cada nível (grupo → departamento, subgrupo → grupo). */
+const PAI = { departamento: null, grupo: "departamento", subgrupo: "grupo" } as const;
 
-async function realizadoPorNivel(
+function realizadoPorNivel(
   nivel: Nivel,
   periodo: Periodo | null,
   lojas: number[],
@@ -190,44 +116,32 @@ async function realizadoPorNivel(
   departamento: number | null,
 ) {
   if (!periodo) return [];
-  const { coluna, pai } = colunasNivel[nivel];
-  return db
-    .select({
-      codigo: coluna,
-      // Códigos são únicos em toda a hierarquia: o pai é o mesmo em todas as linhas.
-      pai: pai ? sql<number>`max(${pai})`.mapWith(Number) : sql<null>`null`,
-      venda: sum(vendaPorOrigem(origem)),
-      custo: sum(custoPorOrigem(origem)),
-    })
-    .from(analiseGerencial)
-    .where(filtroAnalise(periodo, lojas, departamento))
-    .groupBy(coluna);
+  const pai = PAI[nivel];
+  return [...agrupar(vendaDoPeriodo(periodo, lojas, departamento), (l) => l[nivel])].map(([codigo, linhas]) => ({
+    codigo,
+    // Códigos são únicos em toda a hierarquia: o pai é o mesmo em todas as linhas.
+    pai: pai ? linhas[0][pai] : null,
+    venda: somar(linhas, (l) => vendaPorOrigem(l, origem)),
+    custo: somar(linhas, (l) => custoPorOrigem(l, origem)),
+  }));
 }
 
 /** Código, descrição, pai e departamento de cada item do nível (para metas sem venda e para o filtro). */
-async function hierarquia(nivel: Nivel) {
+function hierarquia(nivel: Nivel) {
+  const h = dados.hierarquia();
   if (nivel === "departamento") {
-    const linhas = await db
-      .select({ codigo: departamentos.codigo, descricao: sql<string>`trim(${departamentos.descricao})` })
-      .from(departamentos);
-    return linhas.map((l) => ({ ...l, pai: null as number | null, departamento: l.codigo }));
+    return h.departamentos.map((d) => ({ ...d, pai: null as number | null, departamento: d.codigo }));
   }
   if (nivel === "grupo") {
-    const linhas = await db
-      .select({ codigo: grupos.codigo, descricao: sql<string>`trim(${grupos.descricao})`, pai: grupos.departamento })
-      .from(grupos);
-    return linhas.map((l) => ({ ...l, departamento: l.pai }));
+    return h.grupos.map((g) => ({ codigo: g.codigo, descricao: g.descricao, pai: g.departamento, departamento: g.departamento }));
   }
-  const linhas = await db
-    .select({
-      codigo: subgrupos.codigo,
-      descricao: sql<string>`trim(${subgrupos.descricao})`,
-      pai: subgrupos.grupo,
-      departamento: grupos.departamento,
-    })
-    .from(subgrupos)
-    .leftJoin(grupos, eq(grupos.codigo, subgrupos.grupo));
-  return linhas.map((l) => ({ ...l, departamento: l.departamento ?? -1 }));
+  const departamentoDoGrupo = new Map(h.grupos.map((g) => [g.codigo, g.departamento]));
+  return h.subgrupos.map((s) => ({
+    codigo: s.codigo,
+    descricao: s.descricao,
+    pai: s.grupo,
+    departamento: departamentoDoGrupo.get(s.grupo) ?? -1,
+  }));
 }
 
 /**
@@ -243,16 +157,10 @@ export async function getNiveisMetas(
   origem: Origem,
   departamento: number | null,
 ): Promise<NiveisMetasResponse> {
-  "use cache";
-  cacheLife("hours");
-  cacheTag(CACHE_TAG);
-
-  const [atual, anterior, mensais, itens] = await Promise.all([
-    realizadoPorNivel(nivel, decorrido, lojas, origem, departamento),
-    realizadoPorNivel(nivel, comparacao, lojas, origem, departamento),
-    metasMensais(nivel, periodo, lojas),
-    hierarquia(nivel),
-  ]);
+  const atual = realizadoPorNivel(nivel, decorrido, lojas, origem, departamento);
+  const anterior = realizadoPorNivel(nivel, comparacao, lojas, origem, departamento);
+  const mensais = metasMensais(nivel, periodo, lojas);
+  const itens = hierarquia(nivel);
 
   const porCodigo = new Map(itens.map((i) => [i.codigo, i]));
   const noFiltro = (codigo: number) => departamento == null || porCodigo.get(codigo)?.departamento === departamento;

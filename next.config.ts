@@ -6,7 +6,6 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: ["172.16.*.*"],
   // O canto inferior esquerdo é da barra lateral.
   devIndicators: { position: "bottom-right" },
-  serverExternalPackages: ["mysql2"],
   experimental: {
     optimizePackageImports: ["@mdi/js"],
   },

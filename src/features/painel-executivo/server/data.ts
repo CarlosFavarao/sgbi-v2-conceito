@@ -1,19 +1,9 @@
 import "server-only";
 
-import { and, between, eq, inArray, sql, type AnyColumn, type SQL } from "drizzle-orm";
-import { cacheLife, cacheTag } from "next/cache";
-import { db } from "@/db";
-import {
-  analiseGerencial,
-  cancelamentos,
-  departamentos,
-  despesa,
-  grupos,
-  previsaoDia,
-  subgrupos,
-} from "@/db/schema";
-import { daysInMonth, firstDayOfMonth } from "@/lib/date";
+import { dados } from "@/dados";
+import { daysInMonth, firstDayOfMonth, lastDayOfMonth } from "@/lib/date";
 import { getCuponsDiarios } from "@/server/cupons";
+import { agrupar, custoPorOrigem, somar, vendaPorOrigem } from "@/server/origem";
 import type {
   DepartamentosResponse,
   Fonte,
@@ -24,24 +14,6 @@ import type {
   Periodo,
   PontoSerie,
 } from "../types";
-
-// Dados D-1 (carga noturna): cache de horas, invalidável pela tag.
-const CACHE_TAG = "painel-executivo";
-
-function vendaPorOrigem(origem: Origem) {
-  if (origem === "pdv") return analiseGerencial.totalPDV;
-  if (origem === "faturamento") return analiseGerencial.totalFaturamento;
-  return analiseGerencial.totalVenda;
-}
-
-function custoPorOrigem(origem: Origem) {
-  if (origem === "pdv") return analiseGerencial.totalCustoPDV;
-  if (origem === "faturamento") return analiseGerencial.totalCustoFaturamento;
-  return analiseGerencial.totalCusto;
-}
-
-const sum = (column: AnyColumn | SQL) =>
-  sql<number>`coalesce(sum(${column}), 0)`.mapWith(Number);
 
 /**
  * Série diária de uma fonte (só os dias com carga). Cada fonte é consultada
@@ -54,122 +26,60 @@ export async function getSerie(
   lojas: number[],
   origem: Origem,
 ): Promise<PontoSerie[]> {
-  "use cache";
-  cacheLife("hours");
-  cacheTag(CACHE_TAG);
-
-  const { inicio, fim } = periodo;
-
   switch (fonte) {
     case "vendas":
-      return db
-        .select({
-          data: analiseGerencial.data,
-          venda: sum(vendaPorOrigem(origem)),
-          custo: sum(custoPorOrigem(origem)),
-          compra: sum(analiseGerencial.totalCompra),
-        })
-        .from(analiseGerencial)
-        .where(and(inArray(analiseGerencial.filial, lojas), between(analiseGerencial.data, inicio, fim)))
-        .groupBy(analiseGerencial.data);
+      return [...agrupar(dados.analise(periodo, lojas), (l) => l.data)].map(([data, linhas]) => ({
+        data,
+        venda: somar(linhas, (l) => vendaPorOrigem(l, origem)),
+        custo: somar(linhas, (l) => custoPorOrigem(l, origem)),
+        compra: somar(linhas, (l) => l.totalCompra),
+      }));
     case "pdv":
-      // logpdv (bate com a venda PDV da analise); o parfil tem cerca de metade (P6).
       return (await getCuponsDiarios(periodo, lojas)).map((d) => ({
         data: d.data,
         vendaPdv: d.vendaPdv,
         tickets: d.cupons,
       }));
     case "cancelamentos":
-      return db
-        .select({
-          data: cancelamentos.dataCancelamento,
-          cancelamentos: sum(cancelamentos.valorTotalCancelamento),
-        })
-        .from(cancelamentos)
-        .where(
-          and(inArray(cancelamentos.filial, lojas), between(cancelamentos.dataCancelamento, inicio, fim)),
-        )
-        .groupBy(cancelamentos.dataCancelamento);
+      return [...agrupar(dados.cancelamentos(periodo, lojas), (l) => l.data)].map(([data, linhas]) => ({
+        data,
+        cancelamentos: somar(linhas, (l) => l.valor),
+      }));
     case "despesas":
-      return db
-        .select({ data: despesa.dataDespesa, despesas: sum(despesa.valor) })
-        .from(despesa)
-        .where(and(inArray(despesa.filial, lojas), between(despesa.dataDespesa, inicio, fim)))
-        .groupBy(despesa.dataDespesa);
+      return [...agrupar(dados.despesas(periodo, lojas), (l) => l.data)].map(([data, linhas]) => ({
+        data,
+        despesas: somar(linhas, (l) => l.valor),
+      }));
   }
 }
 
-const dataPrevisao = sql`str_to_date(concat(${previsaoDia.ano}, '-', ${previsaoDia.mes}, '-', ${previsaoDia.codigoDia}), '%Y-%m-%d')`;
-
-export async function getMeta(
-  periodo: Periodo,
-  lojas: number[],
-  origem: Origem,
-): Promise<MetaResponse> {
-  "use cache";
-  cacheLife("hours");
-  cacheTag(CACHE_TAG);
-
+export async function getMeta(periodo: Periodo, lojas: number[], origem: Origem): Promise<MetaResponse> {
   const mes = periodo.fim.slice(0, 7);
-  const [ano, mesNumero] = mes.split("-").map(Number);
-  const lojasMeta = inArray(previsaoDia.codigoFilial, lojas);
-
-  const [[metaPeriodo], [metaMes], [realizado]] = await Promise.all([
-    db
-      .select({ valor: sum(previsaoDia.previsaoVenda) })
-      .from(previsaoDia)
-      .where(and(lojasMeta, between(dataPrevisao, periodo.inicio, periodo.fim))),
-    db
-      .select({ valor: sum(previsaoDia.previsaoVenda) })
-      .from(previsaoDia)
-      .where(and(lojasMeta, eq(previsaoDia.ano, ano), eq(previsaoDia.mes, mesNumero))),
-    db
-      .select({ valor: sum(vendaPorOrigem(origem)) })
-      .from(analiseGerencial)
-      .where(
-        and(
-          inArray(analiseGerencial.filial, lojas),
-          between(analiseGerencial.data, firstDayOfMonth(periodo.fim), periodo.fim),
-        ),
-      ),
-  ]);
+  const metaDoMes = dados.metasDiarias({ inicio: `${mes}-01`, fim: lastDayOfMonth(`${mes}-01`) }, lojas);
+  const realizado = dados.analise({ inicio: firstDayOfMonth(periodo.fim), fim: periodo.fim }, lojas);
 
   return {
-    metaPeriodo: metaPeriodo?.valor ?? 0,
+    metaPeriodo: somar(
+      metaDoMes.filter((m) => m.data >= periodo.inicio && m.data <= periodo.fim),
+      (m) => m.previsaoVenda,
+    ),
     mes,
-    metaMes: metaMes?.valor ?? 0,
-    realizadoMes: realizado?.valor ?? 0,
+    metaMes: somar(metaDoMes, (m) => m.previsaoVenda),
+    realizadoMes: somar(realizado, (l) => vendaPorOrigem(l, origem)),
     diasRestantes: daysInMonth(periodo.fim) - Number(periodo.fim.slice(8, 10)),
   };
 }
 
-const niveis = {
-  departamento: { coluna: analiseGerencial.departamento, tabela: departamentos },
-  grupo: { coluna: analiseGerencial.grupo, tabela: grupos },
-  subgrupo: { coluna: analiseGerencial.subgrupo, tabela: subgrupos },
-} as const;
-
-async function compraVendaPorNivel(
-  nivel: Nivel,
-  periodo: Periodo,
-  lojas: number[],
-  origem: Origem,
-) {
-  const { coluna } = niveis[nivel];
-  const filtros: SQL[] = [
-    inArray(analiseGerencial.filial, lojas),
-    between(analiseGerencial.data, periodo.inicio, periodo.fim),
-  ];
-
-  return db
-    .select({
-      codigo: coluna,
-      compra: sum(analiseGerencial.totalCompra),
-      venda: sum(vendaPorOrigem(origem)),
-    })
-    .from(analiseGerencial)
-    .where(and(...filtros))
-    .groupBy(coluna);
+function compraVendaPorNivel(nivel: Nivel, periodo: Periodo, lojas: number[], origem: Origem) {
+  return new Map(
+    [...agrupar(dados.analise(periodo, lojas), (l) => l[nivel])].map(([codigo, linhas]) => [
+      codigo,
+      {
+        compra: somar(linhas, (l) => l.totalCompra),
+        venda: somar(linhas, (l) => vendaPorOrigem(l, origem)),
+      },
+    ]),
+  );
 }
 
 export async function getDepartamentos(
@@ -179,32 +89,23 @@ export async function getDepartamentos(
   lojas: number[],
   origem: Origem,
 ): Promise<DepartamentosResponse> {
-  "use cache";
-  cacheLife("hours");
-  cacheTag(CACHE_TAG);
+  const atual = compraVendaPorNivel(nivel, periodo, lojas, origem);
+  const anterior = compraVendaPorNivel(nivel, periodoAnterior, lojas, origem);
+  const hierarquia = dados.hierarquia();
+  const nomes = new Map(
+    { departamento: hierarquia.departamentos, grupo: hierarquia.grupos, subgrupo: hierarquia.subgrupos }[nivel].map(
+      (d) => [d.codigo, d.descricao],
+    ),
+  );
 
-  const { tabela } = niveis[nivel];
-  const [atual, anterior, descricoes] = await Promise.all([
-    compraVendaPorNivel(nivel, periodo, lojas, origem),
-    compraVendaPorNivel(nivel, periodoAnterior, lojas, origem),
-    db
-      .select({ codigo: tabela.codigo, descricao: sql<string>`trim(${tabela.descricao})` })
-      .from(tabela),
-  ]);
-
-  const descricaoPorCodigo = new Map(descricoes.map((d) => [d.codigo, d.descricao]));
-  const anteriorPorCodigo = new Map(anterior.map((a) => [a.codigo, a]));
-  const codigos = new Set([...atual.map((a) => a.codigo), ...anterior.map((a) => a.codigo)]);
-  const atualPorCodigo = new Map(atual.map((a) => [a.codigo, a]));
-
-  const linhas: LinhaNivel[] = [...codigos]
+  const linhas: LinhaNivel[] = [...new Set([...atual.keys(), ...anterior.keys()])]
     .map((codigo) => ({
       codigo,
-      descricao: descricaoPorCodigo.get(codigo) ?? `Código ${codigo}`,
-      compra: atualPorCodigo.get(codigo)?.compra ?? 0,
-      venda: atualPorCodigo.get(codigo)?.venda ?? 0,
-      compraAnterior: anteriorPorCodigo.get(codigo)?.compra ?? 0,
-      vendaAnterior: anteriorPorCodigo.get(codigo)?.venda ?? 0,
+      descricao: nomes.get(codigo) ?? `Código ${codigo}`,
+      compra: atual.get(codigo)?.compra ?? 0,
+      venda: atual.get(codigo)?.venda ?? 0,
+      compraAnterior: anterior.get(codigo)?.compra ?? 0,
+      vendaAnterior: anterior.get(codigo)?.venda ?? 0,
     }))
     .filter((l) => l.compra || l.venda || l.compraAnterior || l.vendaAnterior)
     .sort((a, b) => b.venda - a.venda);

@@ -12,7 +12,7 @@ import {
 import { corDoTom, Delta, KpiCard, SemDados } from "@/components/kpi/kpi-card";
 import { Sparkline } from "@/components/kpi/sparkline";
 import { variacao } from "@/lib/calc";
-import { formatData, formatMoeda } from "@/lib/format";
+import { formatData, formatDecimal, formatMoeda } from "@/lib/format";
 
 type Serie = { data: string; valor: number | null }[];
 type Totais = { entradas: number; saidas: number; resultado: number };
@@ -26,15 +26,27 @@ export function kpisDoFinanceiro({
   atual,
   anterior,
   menorSaldo,
+  saldo,
+  referencia,
+  saidasPrevistas,
+  diasPrevistos,
   series,
   carregando,
+  carregandoSaldo,
 }: {
   atual: Totais;
   anterior: Totais | null;
-  /** Menor acumulado previsto nos próximos dias (sem saldo inicial) e a data. */
+  /** Menor acumulado previsto nos próximos dias (a partir de zero) e a data. */
   menorSaldo: { valor: number; data: string } | null;
+  /** Saldo das contas na referência; null enquanto não chega. */
+  saldo: number | null;
+  referencia: string;
+  /** Saídas previstas nos próximos `diasPrevistos` dias. */
+  saidasPrevistas: number;
+  diasPrevistos: number;
   series: { entradas: Serie; saidas: Serie; resultado: Serie };
   carregando: boolean;
+  carregandoSaldo: boolean;
 }): ItemDoBloco[] {
   const comparar = (chave: keyof Totais, maiorMelhor: boolean) =>
     anterior && (
@@ -51,10 +63,12 @@ export function kpisDoFinanceiro({
       node: (
         <KpiCard
           titulo="Saldo em Caixa Hoje"
-          ajuda="Saldo das contas bancárias e do caixa. O banco do SGBI não tem saldos bancários (P42)."
+          ajuda="Saldo das contas bancárias, aplicações e do cofre no fim da data de referência."
           icone={mdiWalletOutline}
           tom="blue"
-          valor={<SemDados>Saldo bancário não integrado</SemDados>}
+          carregando={carregandoSaldo}
+          valor={saldo == null ? <SemDados>Sem saldo</SemDados> : formatMoeda(saldo)}
+          linhas={saldo != null && <span>em {formatData(referencia)}</span>}
         />
       ),
     },
@@ -64,7 +78,7 @@ export function kpisDoFinanceiro({
       node: (
         <KpiCard
           titulo="Entradas do Período"
-          ajuda="Cartões liquidados (valor líquido no vencimento) e contas a receber recebidas, do início do mês até a referência. Vendas em dinheiro e Pix não estão no banco (P44)."
+          ajuda="Vendas à vista (dinheiro e Pix), cartões liquidados (valor líquido no vencimento) e contas a receber recebidas, do início do mês até a referência."
           icone={mdiArrowTopRight}
           tom="green"
           carregando={carregando}
@@ -130,12 +144,14 @@ export function kpisDoFinanceiro({
       node: (
         <KpiCard
           titulo="Menor Saldo Projetado"
-          ajuda="Menor valor do fluxo previsto acumulado nos próximos 30 dias, a partir de zero (sem o saldo bancário de hoje, P42)."
+          ajuda="Saldo de hoje mais o menor valor do fluxo previsto acumulado nos próximos 30 dias."
           icone={mdiAlertOutline}
           tom="orange"
-          carregando={carregando}
-          valor={menorSaldo ? formatMoeda(menorSaldo.valor) : <SemDados>Sem previsão</SemDados>}
-          linhas={menorSaldo && <span>em {formatData(menorSaldo.data)} · sem saldo inicial</span>}
+          carregando={carregando || carregandoSaldo}
+          valor={
+            menorSaldo && saldo != null ? formatMoeda(saldo + menorSaldo.valor) : <SemDados>Sem previsão</SemDados>
+          }
+          linhas={menorSaldo && saldo != null && <span>em {formatData(menorSaldo.data)}</span>}
         />
       ),
     },
@@ -145,10 +161,18 @@ export function kpisDoFinanceiro({
       node: (
         <KpiCard
           titulo="Dias de Cobertura"
-          ajuda="Quantos dias o saldo de hoje cobre as saídas previstas. Depende do saldo bancário (P42)."
+          ajuda="Quantos dias o saldo de hoje cobre as saídas previstas, pela média diária dos próximos 30 dias."
           icone={mdiCalendarClock}
           tom="purple"
-          valor={<SemDados>Depende do saldo bancário</SemDados>}
+          carregando={carregando || carregandoSaldo}
+          valor={
+            saldo != null && saidasPrevistas > 0 ? (
+              `${formatDecimal((saldo * diasPrevistos) / saidasPrevistas)} dias`
+            ) : (
+              <SemDados>Sem saídas previstas</SemDados>
+            )
+          }
+          linhas={saldo != null && saidasPrevistas > 0 && <span>{formatMoeda(saidasPrevistas / diasPrevistos)} de saídas por dia</span>}
         />
       ),
     },

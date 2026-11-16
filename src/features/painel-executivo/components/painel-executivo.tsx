@@ -1,7 +1,7 @@
 "use client";
 
 import Icon from "@mdi/react";
-import { mdiDatabaseClockOutline } from "@mdi/js";
+import { mdiDatabaseClockOutline, mdiStorefrontOutline } from "@mdi/js";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useAcesso } from "@/components/acesso/contexto";
@@ -21,10 +21,11 @@ import {
   vendaDoIntervalo,
 } from "../compute";
 import { periodoComparacao } from "@/lib/date";
-import { PERIODO_PADRAO } from "../config";
+import { periodoPadrao } from "../config";
 import { formatData, formatMoedaCompacta, formatMoeda, formatPercentual } from "@/lib/format";
+import { sessaoQuery } from "@/lib/api";
 import { painelQueries } from "../queries";
-import type { Filtros } from "../types";
+import type { Filtros, Periodo } from "../types";
 import { AlertasList } from "./alertas-list";
 import { DepartamentosTable } from "./departamentos-table";
 import { EvolucaoChart } from "@/components/charts/evolucao-chart";
@@ -34,14 +35,15 @@ import { kpisDoPainel } from "./kpi-grid";
 import { FONTES, LAYOUT_PADRAO, LIMITES, ROTULOS } from "../layout";
 import { MetaAcumulado } from "./meta-acumulado";
 
-type FiltrosEstado = Omit<Filtros, "filiais"> & { filiais: number[] | null };
+/** `null` = o padrão: mês da última carga e todas as filiais (resolvidos quando as filiais chegam). */
+type FiltrosEstado = Omit<Filtros, "filiais" | "periodo"> & { filiais: number[] | null; periodo: Periodo | null };
 
 export function PainelExecutivo() {
   const filiaisQuery = useQuery(painelQueries.filiais());
+  const empresa = useQuery(sessaoQuery()).data?.empresa.nomeFantasia;
   const [estado, setEstado] = useState<FiltrosEstado>({
-    periodo: PERIODO_PADRAO,
+    periodo: null,
     comparacao: { tipo: "periodo-anterior" },
-    // null = todas as filiais com movimento (resolvido quando a lista chega).
     filiais: null,
     origem: "todos",
   });
@@ -49,6 +51,7 @@ export function PainelExecutivo() {
   const filtros: Filtros = useMemo(
     () => ({
       ...estado,
+      periodo: estado.periodo ?? periodoPadrao(filiaisQuery.data?.dataMaxima),
       filiais: estado.filiais ?? filiaisQuery.data?.filiais.map((f) => f.codigo) ?? [],
     }),
     [estado, filiaisQuery.data],
@@ -146,6 +149,13 @@ export function PainelExecutivo() {
           <h1 className="text-xl font-bold tracking-tight">Painel Executivo</h1>
           <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             {/* Subtítulo curto: título e filtros cabem na mesma linha. */}
+            {empresa && (
+              <>
+                <Icon path={mdiStorefrontOutline} size={0.6} aria-hidden />
+                <span className="font-medium text-foreground">{empresa}</span>
+                <span aria-hidden>·</span>
+              </>
+            )}
             <Icon path={mdiDatabaseClockOutline} size={0.6} aria-hidden />
             {filiaisQuery.data?.dataMaxima ? `Dados até ${formatData(filiaisQuery.data.dataMaxima)}` : "Carregando…"}
           </p>

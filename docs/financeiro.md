@@ -1,5 +1,8 @@
 # Financeiro · Fluxo de Caixa
 
+> **Modo conceito (D47):** hoje as duas telas leem dados simulados do Mercado Teste. Saldo em caixa, dias de cobertura, saldo por conta, vendas à vista e a DFC inteira têm valores (antes eram "não integrados", P42 e P51); o texto abaixo descreve as fontes do projeto com dados reais.
+
+
 Quarta tela do v2 (`/financeiro`), feita a partir de um print de referência que define **quais dados** a tela mostra. O visual segue o padrão das outras telas. Decisões em [`decisoes-e-pendencias.md`](decisoes-e-pendencias.md) (D32 a D36) e perguntas em aberto em P42 a P50.
 
 ## 1. Fontes de dados

@@ -73,23 +73,25 @@ export function CategoriasCard({
   entradas,
   saidas,
   carregando,
+  titulo = "Entradas e Saídas por Categoria",
 }: {
   entradas: { total: number; categorias: Categoria[] };
   saidas: { total: number; categorias: Categoria[] };
   carregando: boolean;
+  titulo?: string;
 }) {
   const [medida, setMedida] = useState<Medida>("valor");
   const seletor = <Segmented label="Medida" value={medida} options={MEDIDAS} onChange={setMedida} />;
   return (
     <Card className="min-w-0">
       <CardHeader>
-        <CardTitle>Entradas e Saídas por Categoria</CardTitle>
+        <CardTitle>{titulo}</CardTitle>
         {seletor}
       </CardHeader>
       <ExpandirGrafico
         className="relative grid min-h-36 flex-1 grid-cols-2 gap-3 overflow-hidden px-4 pb-2 pt-1.5"
         ocupado={carregando}
-        titulo="Entradas e Saídas por Categoria"
+        titulo={titulo}
         descricao="Todas as categorias realizadas no mês."
         filtros={seletor}
         desabilitado={(!entradas.categorias.length && !saidas.categorias.length) || carregando}

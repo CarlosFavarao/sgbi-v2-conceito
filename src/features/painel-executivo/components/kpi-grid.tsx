@@ -232,7 +232,9 @@ export function kpisDoPainel({
       node: (
         <KpiCard
           titulo="Venda vs Meta"
-          ajuda="Venda do período dividida pela meta (previsão de venda por dia) do mesmo período."
+          ajuda={`Venda do período dividida pela meta (previsão de venda por dia) do mesmo período.${
+            atingido != null && meta ? ` Meta do período: ${formatMoeda(meta.metaPeriodo)}.` : ""
+          }`}
           icone={mdiBullseyeArrow}
           tom="teal"
           carregando={c.meta || c.vendas}
@@ -240,13 +242,13 @@ export function kpisDoPainel({
           linhas={
             atingido != null &&
             meta && (
-              <>
-                <span className="font-semibold text-foreground tabular-nums">{formatPercentual(atingido)} da meta</span>
-                <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-secondary">
+              // Uma linha só (percentual e barra): o KPI normal comporta o valor e uma linha; a meta fica no balão de ajuda.
+              <div className="flex w-full items-center gap-2">
+                <span className="shrink-0 font-semibold text-foreground tabular-nums">{formatPercentual(atingido)} da meta</span>
+                <div className="h-2 min-w-6 flex-1 overflow-hidden rounded-full bg-secondary">
                   <div className="h-full rounded-full bg-success" style={{ width: `${Math.min(atingido, 100)}%` }} />
                 </div>
-                <span className="tabular-nums">Meta: {formatMoeda(meta.metaPeriodo)}</span>
-              </>
+              </div>
             )
           }
         />
